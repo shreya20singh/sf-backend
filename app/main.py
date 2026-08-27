@@ -33,7 +33,8 @@ URL to persist it.
 * Errors return `{"detail": "..."}`; request-validation failures (`422`) return
   FastAPI's standard `HTTPValidationError` shape.
 * Collection responses are wrapped as `{items, total, limit, offset}` so clients
-  can paginate.
+  can paginate. Collection items omit full photo data; fetch an individual
+  contact when the photo is needed.
 
 ### Interactive docs
 

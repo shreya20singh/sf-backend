@@ -104,14 +104,28 @@ also read):
 ### Contact fields
 
 `first_name` and `last_name` are required; `email` is required and unique
-(case-insensitive). Everything else is optional.
+(case-insensitive). Everything else is optional. `photo` accepts a base64 data
+URL for a JPG, PNG, WebP, or GIF image up to 2 MB. `addresses` is an ordered
+list of child rows, each categorized as `Home`, `Work`, or `Other`.
 
 ```
-first_name, last_name, email, phone, company, job_title,
-address, city, state, postal_code, country, notes
+first_name, last_name, email, photo, phone, company, job_title, addresses, notes
 ```
 
-Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC).
+Each address contains:
+
+```
+type, address, city, state, postal_code, country
+```
+
+Addresses are stored in their own `addresses` table with a foreign key to the
+contact. Replacing a contact replaces its complete ordered address collection;
+PATCH leaves addresses unchanged unless the `addresses` key is present.
+
+Responses add `id`, `full_name`, `created_at`, and `updated_at` (UTC). Collection
+items omit `photo` to keep list payloads lightweight; fetch
+`GET /api/v1/contacts/{id}` to receive the full photo data URL. Each
+nested address also has its own server-assigned `id`.
 
 ### List query parameters
 
@@ -141,7 +155,9 @@ List responses are wrapped so clients can paginate:
 curl -X POST http://127.0.0.1:8000/api/v1/contacts \
   -H 'content-type: application/json' \
   -d '{"first_name":"Katherine","last_name":"Johnson","email":"katherine@example.com",
-       "phone":"+1-757-555-0199","company":"NASA","job_title":"Mathematician"}'
+       "phone":"+1-757-555-0199","company":"NASA","job_title":"Mathematician",
+       "addresses":[{"type":"Work","address":"1 Space Center Blvd","city":"Hampton",
+                     "state":"VA","country":"USA"}]}'
 
 # Search + paginate
 curl "http://127.0.0.1:8000/api/v1/contacts?search=nasa&limit=10&sort_by=last_name"
@@ -163,14 +179,17 @@ curl -X DELETE http://127.0.0.1:8000/api/v1/contacts/1
 Tests run against their own empty in-memory database with seeding disabled
 (see `tests/conftest.py`).
 
+On startup, the service creates missing tables and migrates the photo column
+and legacy inline address fields when upgrading an existing database.
+
 ## Layout
 
 ```
 app/
   main.py             FastAPI app, lifespan startup, /health and /
   config.py           Environment-driven settings
-  database.py         Engine, session factory, StaticPool in-memory wiring
-  models.py           Contact ORM model
+  database.py         Engine, session factory, startup migrations, StaticPool wiring
+  models.py           Contact + Address ORM models and their relationship
   schemas.py          Pydantic request/response models
   crud.py             Database operations (search, sort, paginate)
   seed.py             Sample contacts for the in-memory default
