@@ -7,6 +7,9 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import get_settings
 
+MIGRATION_LOCK_KEY = 741_023_517
+MIGRATION_BATCH_SIZE = 100
+
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
@@ -49,9 +52,20 @@ def init_db() -> None:
     """Create tables. Called on startup; safe to call repeatedly."""
     from app import models  # noqa: F401  (register models on Base.metadata)
 
-    Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
+        _acquire_migration_lock(connection)
+        Base.metadata.create_all(bind=connection)
         _run_migrations(connection)
+
+
+def _acquire_migration_lock(connection: Connection) -> None:
+    if connection.dialect.name == "sqlite":
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+    elif connection.dialect.name == "postgresql":
+        connection.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_key)"),
+            {"lock_key": MIGRATION_LOCK_KEY},
+        )
 
 
 def _run_migrations(connection: Connection) -> None:
@@ -73,8 +87,19 @@ def _migrate_legacy_addresses(connection: Connection, contact_columns: set[str])
         return
 
     selected_columns = ", ".join(("id", *legacy_columns))
-    rows = connection.execute(text(f"SELECT {selected_columns} FROM contacts")).mappings().all()
+    legacy_predicate = " OR ".join(
+        f"({column} IS NOT NULL AND TRIM({column}) <> '')" for column in legacy_columns
+    )
     clear_columns = ", ".join(f"{column} = NULL" for column in legacy_columns)
+    select_legacy = text(
+        f"""
+        SELECT {selected_columns}
+        FROM contacts
+        WHERE id > :last_id AND ({legacy_predicate})
+        ORDER BY id
+        LIMIT :batch_size
+        """
+    )
     insert_address = text(
         """
         INSERT INTO addresses (
@@ -90,35 +115,43 @@ def _migrate_legacy_addresses(connection: Connection, contact_columns: set[str])
     )
     clear_legacy = text(f"UPDATE contacts SET {clear_columns} WHERE id = :contact_id")
 
-    for row in rows:
-        values = {
-            column: _clean_legacy_value(row.get(column))
-            for column in legacy_columns
-        }
-        if not any(values.values()):
-            continue
+    last_id = -1
+    while True:
+        rows = connection.execute(
+            select_legacy,
+            {"last_id": last_id, "batch_size": MIGRATION_BATCH_SIZE},
+        ).mappings().all()
+        if not rows:
+            return
 
-        address = values.get("address") or next(
-            (
-                values[column]
-                for column in ("city", "state", "postal_code", "country")
-                if values.get(column)
-            ),
-            "Legacy address",
-        )
-        connection.execute(
-            insert_address,
-            {
-                "contact_id": row["id"],
-                "address_type": "Other",
-                "address": address,
-                "city": values.get("city"),
-                "state": values.get("state"),
-                "postal_code": values.get("postal_code"),
-                "country": values.get("country"),
-            },
-        )
-        connection.execute(clear_legacy, {"contact_id": row["id"]})
+        for row in rows:
+            values = {
+                column: _clean_legacy_value(row.get(column))
+                for column in legacy_columns
+            }
+            address = values.get("address") or next(
+                (
+                    values[column]
+                    for column in ("city", "state", "postal_code", "country")
+                    if values.get(column)
+                ),
+                "Legacy address",
+            )
+            connection.execute(
+                insert_address,
+                {
+                    "contact_id": row["id"],
+                    "address_type": "Other",
+                    "address": address,
+                    "city": values.get("city"),
+                    "state": values.get("state"),
+                    "postal_code": values.get("postal_code"),
+                    "country": values.get("country"),
+                },
+            )
+            connection.execute(clear_legacy, {"contact_id": row["id"]})
+
+        last_id = rows[-1]["id"]
 
 
 def _clean_legacy_value(value: object) -> str | None:
