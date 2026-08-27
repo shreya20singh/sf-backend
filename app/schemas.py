@@ -1,6 +1,52 @@
+import base64
+import binascii
+import re
 from datetime import datetime, timezone
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+MAX_PHOTO_BYTES = 2 * 1024 * 1024
+MAX_PHOTO_DATA_URL_LENGTH = ((MAX_PHOTO_BYTES + 2) // 3) * 4 + 32
+PHOTO_DATA_URL_PATTERN = re.compile(
+    r"^data:(image/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$"
+)
+
+
+def _matches_image_type(media_type: str, content: bytes) -> bool:
+    if media_type == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if media_type == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if media_type == "image/gif":
+        return content.startswith((b"GIF87a", b"GIF89a"))
+    return (
+        media_type == "image/webp"
+        and len(content) >= 12
+        and content.startswith(b"RIFF")
+        and content[8:12] == b"WEBP"
+    )
+
+
+def _validate_photo_data_url(value: str) -> str:
+    match = PHOTO_DATA_URL_PATTERN.fullmatch(value)
+    if match is None:
+        raise ValueError("Photo must be a base64-encoded JPG, PNG, WebP, or GIF image")
+
+    media_type, encoded = match.groups()
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("Photo contains invalid base64 data") from error
+
+    if len(content) > MAX_PHOTO_BYTES:
+        raise ValueError("Photo must be 2 MB or smaller")
+    if not _matches_image_type(media_type, content):
+        raise ValueError("Photo content does not match its declared image type")
+    return value
+
+
+PhotoDataUrl = Annotated[str, AfterValidator(_validate_photo_data_url)]
 
 
 class ContactBase(BaseModel):
@@ -25,6 +71,14 @@ class ContactBase(BaseModel):
             "compared case-insensitively and stored lowercased."
         ),
         examples=["ada@example.com"],
+    )
+    photo: PhotoDataUrl | None = Field(
+        default=None,
+        max_length=MAX_PHOTO_DATA_URL_LENGTH,
+        description=(
+            "Optional profile photo as a base64 data URL. JPG, PNG, WebP, and GIF "
+            "images up to 2 MB are accepted."
+        ),
     )
     phone: str | None = Field(
         default=None,
@@ -124,6 +178,11 @@ class ContactUpdate(BaseModel):
         default=None,
         max_length=320,
         description="New email address. Must not belong to another contact.",
+    )
+    photo: PhotoDataUrl | None = Field(
+        default=None,
+        max_length=MAX_PHOTO_DATA_URL_LENGTH,
+        description="New profile photo data URL. Send null to remove the photo.",
     )
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")

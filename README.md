@@ -104,10 +104,11 @@ also read):
 ### Contact fields
 
 `first_name` and `last_name` are required; `email` is required and unique
-(case-insensitive). Everything else is optional.
+(case-insensitive). Everything else is optional. `photo` accepts a base64 data
+URL for a JPG, PNG, WebP, or GIF image up to 2 MB.
 
 ```
-first_name, last_name, email, phone, company, job_title,
+first_name, last_name, email, photo, phone, company, job_title,
 address, city, state, postal_code, country, notes
 ```
 

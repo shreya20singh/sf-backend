@@ -131,6 +131,7 @@ def test_contact_fields_are_described_and_have_examples(spec):
     for name, field in schema["properties"].items():
         assert field.get("description"), f"ContactRead.{name} is missing a description"
     assert schema["properties"]["email"]["examples"] == ["ada@example.com"]
+    assert "2 MB" in schema["properties"]["photo"]["description"]
     assert schema["properties"]["full_name"]["description"]
 
 

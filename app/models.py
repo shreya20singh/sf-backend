@@ -18,6 +18,7 @@ class Contact(Base):
     first_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     last_name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True, index=True)
+    photo: Mapped[str | None] = mapped_column(Text)
     phone: Mapped[str | None] = mapped_column(String(40))
 
     company: Mapped[str | None] = mapped_column(String(200))
