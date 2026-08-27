@@ -278,6 +278,17 @@ def test_patch_replaces_and_clears_addresses(client, payload):
     assert response.json()["addresses"] == []
 
 
+def test_patch_addresses_updates_timestamp(client, payload):
+    created = client.post(BASE, json=payload).json()
+    response = client.patch(
+        f"{BASE}/{created['id']}",
+        json={"addresses": MULTIPLE_ADDRESSES},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["updated_at"] != created["updated_at"]
+
+
 def test_patch_duplicate_email_conflicts(client, payload):
     first = client.post(BASE, json=payload).json()["id"]
     client.post(BASE, json={**payload, "email": "grace@example.com"})

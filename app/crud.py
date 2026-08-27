@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, defer
 
@@ -5,6 +7,10 @@ from app.models import Address, Contact
 from app.schemas import AddressCreate, ContactCreate, ContactReplace, ContactUpdate
 
 SORTABLE_FIELDS = ("id", "first_name", "last_name", "email", "company", "created_at", "updated_at")
+
+
+def _touch(contact: Contact) -> None:
+    contact.updated_at = datetime.now(timezone.utc)
 
 
 def _normalize_email(email: str) -> str:
@@ -82,6 +88,7 @@ def replace_contact(db: Session, contact: Contact, payload: ContactReplace) -> C
     for field, value in payload.model_dump(exclude={"addresses"}).items():
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
     contact.addresses = _address_rows(payload.addresses)
+    _touch(contact)
     db.commit()
     db.refresh(contact)
     return contact
@@ -92,6 +99,7 @@ def update_contact(db: Session, contact: Contact, payload: ContactUpdate) -> Con
         setattr(contact, field, _normalize_email(value) if field == "email" else value)
     if "addresses" in payload.model_fields_set:
         contact.addresses = _address_rows(payload.addresses or [])
+        _touch(contact)
     db.commit()
     db.refresh(contact)
     return contact
