@@ -59,6 +59,73 @@ def _run_migrations(connection: Connection) -> None:
     columns = {column["name"] for column in inspect(connection).get_columns("contacts")}
     if "photo" not in columns:
         connection.execute(text("ALTER TABLE contacts ADD COLUMN photo TEXT"))
+    _migrate_legacy_addresses(connection, columns)
+
+
+def _migrate_legacy_addresses(connection: Connection, contact_columns: set[str]) -> None:
+    """Move legacy inline address fields into ordered child rows once."""
+    legacy_columns = tuple(
+        column
+        for column in ("address", "city", "state", "postal_code", "country")
+        if column in contact_columns
+    )
+    if not legacy_columns or not inspect(connection).has_table("addresses"):
+        return
+
+    selected_columns = ", ".join(("id", *legacy_columns))
+    rows = connection.execute(text(f"SELECT {selected_columns} FROM contacts")).mappings().all()
+    clear_columns = ", ".join(f"{column} = NULL" for column in legacy_columns)
+    insert_address = text(
+        """
+        INSERT INTO addresses (
+            contact_id, type, address, city, state, postal_code, country, position
+        ) VALUES (
+            :contact_id, :address_type, :address, :city, :state, :postal_code, :country,
+            COALESCE(
+                (SELECT MAX(position) + 1 FROM addresses WHERE contact_id = :contact_id),
+                0
+            )
+        )
+        """
+    )
+    clear_legacy = text(f"UPDATE contacts SET {clear_columns} WHERE id = :contact_id")
+
+    for row in rows:
+        values = {
+            column: _clean_legacy_value(row.get(column))
+            for column in legacy_columns
+        }
+        if not any(values.values()):
+            continue
+
+        address = values.get("address") or next(
+            (
+                values[column]
+                for column in ("city", "state", "postal_code", "country")
+                if values.get(column)
+            ),
+            "Legacy address",
+        )
+        connection.execute(
+            insert_address,
+            {
+                "contact_id": row["id"],
+                "address_type": "Other",
+                "address": address,
+                "city": values.get("city"),
+                "state": values.get("state"),
+                "postal_code": values.get("postal_code"),
+                "country": values.get("country"),
+            },
+        )
+        connection.execute(clear_legacy, {"contact_id": row["id"]})
+
+
+def _clean_legacy_value(value: object) -> str | None:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    return cleaned or None
 
 
 def get_db() -> Generator[Session, None, None]:

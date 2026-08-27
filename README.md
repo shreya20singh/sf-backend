@@ -179,6 +179,9 @@ curl -X DELETE http://127.0.0.1:8000/api/v1/contacts/1
 Tests run against their own empty in-memory database with seeding disabled
 (see `tests/conftest.py`).
 
+On startup, the service creates missing tables and migrates the photo column
+and legacy inline address fields when upgrading an existing database.
+
 ## Layout
 
 ```

@@ -1,9 +1,10 @@
-from sqlalchemy import inspect, text
+from sqlalchemy import inspect, select, text
 
-from app.database import Base, engine, init_db
+from app.database import Base, SessionLocal, engine, init_db
+from app.models import Address
 
 
-def test_init_db_migrates_photo_column_on_existing_contacts_table():
+def test_init_db_migrates_legacy_contacts_without_data_loss():
     Base.metadata.drop_all(bind=engine)
     with engine.begin() as connection:
         connection.exec_driver_sql(
@@ -31,13 +32,17 @@ def test_init_db_migrates_photo_column_on_existing_contacts_table():
             text(
                 """
                 INSERT INTO contacts (
-                    id, first_name, last_name, email, created_at, updated_at
-                ) VALUES (1, 'Ada', 'Lovelace', 'ada@example.com', :created_at, :updated_at)
+                    id, first_name, last_name, email, city, country, created_at, updated_at
+                ) VALUES (
+                    1, 'Ada', 'Lovelace', 'ada@example.com', 'San Francisco', 'USA',
+                    :created_at, :updated_at
+                )
                 """
             ),
             {"created_at": "2026-08-26 00:00:00", "updated_at": "2026-08-26 00:00:00"},
         )
 
+    init_db()
     init_db()
 
     columns = {column["name"] for column in inspect(engine).get_columns("contacts")}
@@ -47,3 +52,14 @@ def test_init_db_migrates_photo_column_on_existing_contacts_table():
             text("SELECT first_name, last_name, email, photo FROM contacts WHERE id = 1")
         ).one()
     assert tuple(row) == ("Ada", "Lovelace", "ada@example.com", None)
+
+    with SessionLocal() as db:
+        addresses = db.scalars(
+            select(Address).where(Address.contact_id == 1)
+        ).all()
+    assert len(addresses) == 1
+    assert addresses[0].type.value == "Other"
+    assert addresses[0].address == "San Francisco"
+    assert addresses[0].city == "San Francisco"
+    assert addresses[0].country == "USA"
+    assert addresses[0].position == 0
