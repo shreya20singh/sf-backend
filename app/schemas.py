@@ -2,9 +2,13 @@ import base64
 import binascii
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 from typing import Annotated
 
+from PIL import Image
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
+
+from app.models import AddressType
 
 MAX_PHOTO_BYTES = 2 * 1024 * 1024
 MAX_PHOTO_DATA_URL_LENGTH = ((MAX_PHOTO_BYTES + 2) // 3) * 4 + 32
@@ -14,18 +18,24 @@ PHOTO_DATA_URL_PATTERN = re.compile(
 
 
 def _matches_image_type(media_type: str, content: bytes) -> bool:
-    if media_type == "image/jpeg":
-        return content.startswith(b"\xff\xd8\xff")
-    if media_type == "image/png":
-        return content.startswith(b"\x89PNG\r\n\x1a\n")
-    if media_type == "image/gif":
-        return content.startswith((b"GIF87a", b"GIF89a"))
-    return (
-        media_type == "image/webp"
-        and len(content) >= 12
-        and content.startswith(b"RIFF")
-        and content[8:12] == b"WEBP"
-    )
+    expected_formats = {
+        "image/jpeg": "JPEG",
+        "image/png": "PNG",
+        "image/webp": "WEBP",
+        "image/gif": "GIF",
+    }
+    expected_format = expected_formats.get(media_type)
+    if expected_format is None:
+        return False
+
+    try:
+        with Image.open(BytesIO(content)) as image:
+            if image.format != expected_format:
+                return False
+            image.verify()
+    except (Image.DecompressionBombError, OSError, SyntaxError, ValueError):
+        return False
+    return True
 
 
 def _validate_photo_data_url(value: str) -> str:
@@ -47,6 +57,72 @@ def _validate_photo_data_url(value: str) -> str:
 
 
 PhotoDataUrl = Annotated[str, AfterValidator(_validate_photo_data_url)]
+
+
+class AddressBase(BaseModel):
+    """A postal address owned by a contact."""
+
+    type: AddressType = Field(
+        description="Address category.",
+        examples=[AddressType.HOME],
+    )
+    address: str = Field(
+        min_length=1,
+        max_length=300,
+        description="Street address, including unit or suite.",
+        examples=["1 Market St, Suite 400"],
+    )
+    city: str | None = Field(
+        default=None,
+        max_length=120,
+        description="City or locality.",
+        examples=["San Francisco"],
+    )
+    state: str | None = Field(
+        default=None,
+        max_length=120,
+        description="State, province, or region.",
+        examples=["CA"],
+    )
+    postal_code: str | None = Field(
+        default=None,
+        max_length=20,
+        description="Postal or ZIP code.",
+        examples=["94105"],
+    )
+    country: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Country name.",
+        examples=["USA"],
+    )
+
+    @field_validator("address")
+    @classmethod
+    def _strip_required_address(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Street address must not be blank")
+        return value
+
+    @field_validator("city", "state", "postal_code", "country")
+    @classmethod
+    def _strip_optional_address_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class AddressCreate(AddressBase):
+    """An address submitted while creating or updating a contact."""
+
+
+class AddressRead(AddressBase):
+    """A stored address row nested under its contact."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int = Field(description="Server-assigned address identifier.", examples=[1])
 
 
 class ContactBase(BaseModel):
@@ -98,26 +174,6 @@ class ContactBase(BaseModel):
         description="Role held at the company.",
         examples=["Mathematician"],
     )
-    address: str | None = Field(
-        default=None,
-        max_length=300,
-        description="Street address, including unit or suite.",
-        examples=["1 Market St, Suite 400"],
-    )
-    city: str | None = Field(default=None, max_length=120, description="City or locality.", examples=["San Francisco"])
-    state: str | None = Field(
-        default=None,
-        max_length=120,
-        description="State, province, or region.",
-        examples=["CA"],
-    )
-    postal_code: str | None = Field(
-        default=None,
-        max_length=20,
-        description="Postal or ZIP code.",
-        examples=["94105"],
-    )
-    country: str | None = Field(default=None, max_length=120, description="Country name.", examples=["USA"])
     notes: str | None = Field(
         default=None,
         description="Free-form notes about the contact. No length limit.",
@@ -132,11 +188,16 @@ _FULL_EXAMPLE = {
     "phone": "+1-415-555-0101",
     "company": "Analytical Engines",
     "job_title": "Mathematician",
-    "address": "1 Market St, Suite 400",
-    "city": "San Francisco",
-    "state": "CA",
-    "postal_code": "94105",
-    "country": "USA",
+    "addresses": [
+        {
+            "type": "Work",
+            "address": "1 Market St, Suite 400",
+            "city": "San Francisco",
+            "state": "CA",
+            "postal_code": "94105",
+            "country": "USA",
+        }
+    ],
     "notes": "Met at the SF hackathon.",
 }
 _MINIMAL_EXAMPLE = {"first_name": "Grace", "last_name": "Hopper", "email": "grace@example.com"}
@@ -147,16 +208,27 @@ class ContactCreate(ContactBase):
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE, _MINIMAL_EXAMPLE]})
 
+    addresses: list[AddressCreate] = Field(
+        default_factory=list,
+        description="Ordered postal addresses owned by the contact.",
+    )
+
 
 class ContactReplace(ContactBase):
     """
     Body of `PUT /api/v1/contacts/{contact_id}`.
 
-    This is a full replacement: any optional field you omit is set back to `null`.
+    This is a full replacement: any optional scalar field you omit is set back
+    to `null`, and omitted addresses replace the collection with an empty list.
     Use `PATCH` if you only want to change some fields.
     """
 
     model_config = ConfigDict(json_schema_extra={"examples": [_FULL_EXAMPLE]})
+
+    addresses: list[AddressCreate] = Field(
+        default_factory=list,
+        description="Complete ordered replacement for the contact's addresses.",
+    )
 
 
 class ContactUpdate(BaseModel):
@@ -187,16 +259,18 @@ class ContactUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=40, description="New phone number.")
     company: str | None = Field(default=None, max_length=200, description="New company.")
     job_title: str | None = Field(default=None, max_length=200, description="New job title.")
-    address: str | None = Field(default=None, max_length=300, description="New street address.")
-    city: str | None = Field(default=None, max_length=120, description="New city.")
-    state: str | None = Field(default=None, max_length=120, description="New state or region.")
-    postal_code: str | None = Field(default=None, max_length=20, description="New postal code.")
-    country: str | None = Field(default=None, max_length=120, description="New country.")
+    addresses: list[AddressCreate] | None = Field(
+        default=None,
+        description=(
+            "Complete ordered replacement for the contact's addresses. "
+            "Send an empty list or null to remove every address."
+        ),
+    )
     notes: str | None = Field(default=None, description="New notes; replaces the existing text.")
 
 
 class ContactRead(ContactBase):
-    """A stored contact, as returned by every contact endpoint."""
+    """A stored contact, as returned by single-contact and mutation endpoints."""
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -213,6 +287,10 @@ class ContactRead(ContactBase):
         },
     )
 
+    addresses: list[AddressRead] = Field(
+        default_factory=list,
+        description="Stored address rows in the order supplied by the client.",
+    )
     id: int = Field(description="Server-assigned identifier.", examples=[1])
     created_at: datetime = Field(
         description="UTC timestamp of when the contact was created.",
@@ -230,6 +308,71 @@ class ContactRead(ContactBase):
         # them as such rather than emitting an ambiguous naive timestamp.
         return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
+    @computed_field(
+        description="Convenience concatenation of first and last name.",
+        examples=["Ada Lovelace"],
+    )
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}".strip()
+
+
+class ContactListItem(BaseModel):
+    """A contact list item without the full photo payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    first_name: str = Field(
+        description="Given name.",
+        examples=["Ada"],
+    )
+    last_name: str = Field(
+        description="Family name.",
+        examples=["Lovelace"],
+    )
+    email: EmailStr = Field(
+        description="Primary email address.",
+        examples=["ada@example.com"],
+    )
+    phone: str | None = Field(
+        default=None,
+        description="Phone number.",
+        examples=["+1-415-555-0101"],
+    )
+    company: str | None = Field(
+        default=None,
+        description="Employer or organisation name.",
+        examples=["Analytical Engines"],
+    )
+    job_title: str | None = Field(
+        default=None,
+        description="Role held at the company.",
+        examples=["Mathematician"],
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form notes about the contact.",
+        examples=["Met at the SF hackathon."],
+    )
+    addresses: list[AddressRead] = Field(
+        default_factory=list,
+        description="Stored address rows in the order supplied by the client.",
+    )
+    id: int = Field(description="Server-assigned identifier.", examples=[1])
+    created_at: datetime = Field(
+        description="UTC timestamp of when the contact was created.",
+        examples=["2026-08-19T16:22:58.189507Z"],
+    )
+    updated_at: datetime = Field(
+        description="UTC timestamp of the last modification.",
+        examples=["2026-08-19T16:22:58.189511Z"],
+    )
+
+    @field_validator("created_at", "updated_at")
+    @classmethod
+    def _as_utc(cls, value: datetime) -> datetime:
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
     @computed_field(description="Convenience concatenation of first and last name.", examples=["Ada Lovelace"])
     @property
     def full_name(self) -> str:
@@ -239,7 +382,9 @@ class ContactRead(ContactBase):
 class ContactPage(BaseModel):
     """One page of contacts plus the totals a client needs to paginate."""
 
-    items: list[ContactRead] = Field(description="Contacts on this page, ordered by the requested sort.")
+    items: list[ContactListItem] = Field(
+        description="Contacts on this page, ordered by the requested sort."
+    )
     total: int = Field(
         description="Total contacts matching the query, ignoring `limit` and `offset`.",
         examples=[42],

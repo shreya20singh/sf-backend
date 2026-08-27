@@ -6,6 +6,7 @@ from app.database import get_db
 from app.models import Contact
 from app.schemas import (
     ContactCreate,
+    ContactListItem,
     ContactPage,
     ContactRead,
     ContactReplace,
@@ -56,7 +57,8 @@ def create_contact(payload: ContactCreate, db: Session = Depends(get_db)) -> Con
     Store a new contact.
 
     `first_name`, `last_name`, and `email` are required; every other field is
-    optional. The email must be unique — a duplicate (compared case-insensitively)
+    optional. Each item in `addresses` becomes a separate child row owned by the
+    contact. The email must be unique — a duplicate (compared case-insensitively)
     is rejected with `409 Conflict` rather than creating a second record.
     """
     _reject_duplicate_email(db, payload.email)
@@ -101,7 +103,7 @@ def list_contacts(
         db, search=search, limit=limit, offset=offset, sort_by=sort_by, order=order
     )
     return ContactPage(
-        items=[ContactRead.model_validate(item) for item in items],
+        items=[ContactListItem.model_validate(item) for item in items],
         total=total,
         limit=limit,
         offset=offset,
@@ -138,7 +140,8 @@ def replace_contact(
     Replace every field of an existing contact.
 
     This is a true `PUT`: optional fields you leave out of the body are cleared
-    to `null`. To change a subset of fields, use `PATCH` instead.
+    to `null`, and omitted `addresses` replace the collection with an empty list.
+    To change a subset of fields, use `PATCH` instead.
     """
     contact = _get_or_404(db, contact_id)
     _reject_duplicate_email(db, payload.email, exclude_id=contact_id)
@@ -161,9 +164,10 @@ def update_contact(
     """
     Update only the fields present in the request body.
 
-    Fields you omit keep their current value. Re-sending a contact's own email
-    address is allowed; using an email that belongs to a different contact
-    returns `409 Conflict`.
+    Fields you omit keep their current value. If `addresses` is present, it
+    replaces the complete ordered child collection; omitting it preserves the
+    current rows. Re-sending a contact's own email address is allowed; using an
+    email that belongs to a different contact returns `409 Conflict`.
     """
     contact = _get_or_404(db, contact_id)
     if payload.email is not None:

@@ -132,13 +132,35 @@ def test_contact_fields_are_described_and_have_examples(spec):
         assert field.get("description"), f"ContactRead.{name} is missing a description"
     assert schema["properties"]["email"]["examples"] == ["ada@example.com"]
     assert "2 MB" in schema["properties"]["photo"]["description"]
+    assert schema["properties"]["addresses"]["items"]["$ref"].endswith("/AddressRead")
     assert schema["properties"]["full_name"]["description"]
+
+
+def test_list_items_omit_photo(spec):
+    page = spec["components"]["schemas"]["ContactPage"]
+    item_ref = page["properties"]["items"]["items"]["$ref"]
+    item = spec["components"]["schemas"][item_ref.rsplit("/", 1)[-1]]
+
+    assert item_ref.endswith("/ContactListItem")
+    assert "photo" not in item["properties"]
+
+
+def test_address_schema_models_the_child_rows(spec):
+    address = spec["components"]["schemas"]["AddressRead"]
+    assert set(address["required"]) >= {"id", "type", "address"}
+    assert address["properties"]["type"]["$ref"].endswith("/AddressType")
+    assert spec["components"]["schemas"]["AddressType"]["enum"] == [
+        "Home",
+        "Work",
+        "Other",
+    ]
 
 
 def test_request_bodies_carry_examples(spec):
     create = spec["components"]["schemas"]["ContactCreate"]
     assert len(create["examples"]) == 2
     assert create["examples"][0]["email"] == "ada@example.com"
+    assert create["examples"][0]["addresses"][0]["type"] == "Work"
     assert set(create["required"]) == {"first_name", "last_name", "email"}
 
     patch = spec["components"]["schemas"]["ContactUpdate"]

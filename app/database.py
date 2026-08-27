@@ -1,7 +1,7 @@
 from collections.abc import Generator
 
-from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Engine
+from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -50,6 +50,15 @@ def init_db() -> None:
     from app import models  # noqa: F401  (register models on Base.metadata)
 
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        _run_migrations(connection)
+
+
+def _run_migrations(connection: Connection) -> None:
+    """Apply idempotent schema changes that create_all cannot make."""
+    columns = {column["name"] for column in inspect(connection).get_columns("contacts")}
+    if "photo" not in columns:
+        connection.execute(text("ALTER TABLE contacts ADD COLUMN photo TEXT"))
 
 
 def get_db() -> Generator[Session, None, None]:
